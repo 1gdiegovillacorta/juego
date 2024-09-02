@@ -20,10 +20,10 @@ app.use(
 );
 
 const db = mysql.createConnection({
-  host: "localhost",
-  user: "root",
-  password: "",
-  database: "juego",
+  host: "sql5.freesqldatabase.com",
+  user: "sql5729021",
+  password: "pxYn6xceaF",
+  database: "sql5729021",
 });
 
 db.connect((err) => {
