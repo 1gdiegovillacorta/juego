@@ -20,15 +20,210 @@ app.use(
 );
 
 const db = mysql.createConnection({
-  host: "sql5.freesqldatabase.com",
-  user: "sql5729021",
-  password: "pxYn6xceaF",
-  database: "sql5729021",
+  host: "localhost",
+  user: "root",
+  password: "",
+  database: "juego",
 });
 
 db.connect((err) => {
   if (err) throw err;
   console.log("Connectado a la base de datos MySQL");
+});
+
+const rooms = {};
+
+function fetchQuestionsForRoom(roomCode) {
+  return new Promise((resolve, reject) => {
+    const query = `
+      SELECT p.IdPregunta, p.Pregunta, 
+             r.IdRespuesta, r.Respuesta, r.BuenaMala
+      FROM preguntas p
+      JOIN respuestas r ON p.IdPregunta = r.IdPregunta
+      WHERE p.IdCategoria = 2
+      ORDER BY RAND()
+      LIMIT 40
+    `;
+
+    db.query(query, (err, results) => {
+      if (err) {
+        console.error("Error obteniendo las preguntas:", err);
+        reject(err);
+        return;
+      }
+
+      const questions = [];
+      let currentQuestion = null;
+
+      results.forEach((row) => {
+        if (!currentQuestion || currentQuestion.IdPregunta !== row.IdPregunta) {
+          if (currentQuestion) {
+            questions.push(currentQuestion);
+          }
+          currentQuestion = {
+            IdPregunta: row.IdPregunta,
+            Pregunta: row.Pregunta,
+            Respuestas: [],
+          };
+        }
+        currentQuestion.Respuestas.push({
+          IdRespuesta: row.IdRespuesta,
+          Respuesta: row.Respuesta,
+          BuenaMala: row.BuenaMala,
+        });
+      });
+
+      if (currentQuestion) {
+        questions.push(currentQuestion);
+      }
+
+      rooms[roomCode].questions = questions.slice(0, 10);  // Tomar solo 10 preguntas
+      rooms[roomCode].currentQuestionIndex = 0;
+      resolve();
+    });
+  });
+}
+
+app.post("/createRoom", (req, res) => {
+  const { playerName } = req.body;
+  const roomCode = Math.random().toString(36).substring(7).toUpperCase();
+  rooms[roomCode] = {
+    name: `Sala de ${playerName}`,
+    players: [{name: playerName, score: 0, ready: false}],
+    state: 'waiting',
+    questions: [],
+    currentQuestionIndex: 0
+  };
+  res.json({ success: true, roomCode });
+});
+
+app.get("/availableRooms", (req, res) => {
+  const availableRooms = Object.entries(rooms)
+    .filter(([_, room]) => room.state === 'waiting')
+    .map(([code, room]) => ({
+      id: code,
+      codigo: code,
+      nombre: room.name,
+      jugadores: JSON.stringify(room.players)
+    }));
+  res.json(availableRooms);
+});
+
+app.post("/joinRoom", (req, res) => {
+  const { roomCode, playerName } = req.body;
+  if (rooms[roomCode] && rooms[roomCode].state === 'waiting') {
+    rooms[roomCode].players.push({name: playerName, score: 0, ready: false});
+    res.json({ success: true, roomCode });
+  } else {
+    res.json({ success: false, message: "Sala no encontrada o juego ya iniciado" });
+  }
+});
+
+app.post("/playerReady", (req, res) => {
+  const { roomCode, playerName } = req.body;
+  if (rooms[roomCode]) {
+    const player = rooms[roomCode].players.find(p => p.name === playerName);
+    if (player) {
+      player.ready = true;
+      res.json({ success: true });
+    } else {
+      res.json({ success: false, message: "Jugador no encontrado" });
+    }
+  } else {
+    res.json({ success: false, message: "Sala no encontrada" });
+  }
+});
+
+app.get("/roomStatus", (req, res) => {
+  const { roomCode } = req.query;
+  if (rooms[roomCode]) {
+    res.json({
+      success: true,
+      players: rooms[roomCode].players,
+      state: rooms[roomCode].state,
+      currentQuestionIndex: rooms[roomCode].currentQuestionIndex
+    });
+  } else {
+    res.json({ success: false, message: "Sala no encontrada" });
+  }
+});
+
+app.post("/startGame", async (req, res) => {
+  const { roomCode } = req.body;
+  if (rooms[roomCode] && rooms[roomCode].players.every(p => p.ready)) {
+    try {
+      await fetchQuestionsForRoom(roomCode);
+      rooms[roomCode].state = 'playing';
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error starting game:", error);
+      res.json({ success: false, message: "Error al iniciar el juego" });
+    }
+  } else {
+    res.json({ success: false, message: "No todos los jugadores están listos" });
+  }
+});
+
+app.get("/getQuestion", (req, res) => {
+  const { roomCode } = req.query;
+  if (rooms[roomCode] && rooms[roomCode].state === 'playing') {
+    const currentQuestion = rooms[roomCode].questions[rooms[roomCode].currentQuestionIndex];
+    if (currentQuestion) {
+      // Asegúrate de que todas las propiedades necesarias estén presentes
+      const questionToSend = {
+        IdPregunta: currentQuestion.IdPregunta,
+        Pregunta: currentQuestion.Pregunta,
+        Respuestas: currentQuestion.Respuestas.map(r => ({
+          IdRespuesta: r.IdRespuesta,
+          Respuesta: r.Respuesta,
+          // No enviamos BuenaMala al cliente para evitar trampas
+        }))
+      };
+      res.json({
+        success: true,
+        question: questionToSend
+      });
+    } else {
+      res.json({ success: false, message: "No hay más preguntas" });
+    }
+  } else {
+    res.json({ success: false, message: "Sala no encontrada o juego no iniciado" });
+  }
+});
+
+app.post("/submitAnswer", (req, res) => {
+  const { roomCode, playerName, answerId } = req.body;
+  if (rooms[roomCode] && rooms[roomCode].state === 'playing') {
+    const currentQuestion = rooms[roomCode].questions[rooms[roomCode].currentQuestionIndex];
+    const answer = currentQuestion.Respuestas.find(a => a.IdRespuesta === answerId);
+    const player = rooms[roomCode].players.find(p => p.name === playerName);
+    
+    if (answer && player) {
+      const isCorrect = answer.BuenaMala;
+      if (isCorrect) {
+        player.score += 75;
+      }
+      player.answered = true;
+      
+      // Verificar si todos los jugadores han respondido
+      const allAnswered = rooms[roomCode].players.every(p => p.answered);
+      
+      if (allAnswered) {
+        rooms[roomCode].currentQuestionIndex++;
+        rooms[roomCode].players.forEach(p => p.answered = false);
+        
+        if (rooms[roomCode].currentQuestionIndex >= rooms[roomCode].questions.length) {
+          rooms[roomCode].state = 'finished';
+        }
+      }
+      
+      res.json({ success: true, correct: isCorrect });
+    } else {
+      res.json({ success: false, message: "Respuesta o jugador no encontrado" });
+    }
+  } else {
+    res.json({ success: false, message: "Sala no encontrada o juego no iniciado" });
+  }
 });
 
 app.post("/signup", async (req, res) => {
