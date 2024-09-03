@@ -36,12 +36,13 @@ const rooms = {};
 function fetchQuestionsForRoom(roomCode) {
   return new Promise((resolve, reject) => {
     const query = `
-      SELECT p.IdPregunta, p.Pregunta, 
+
+         SELECT p.IdPregunta, p.Pregunta, 
              r.IdRespuesta, r.Respuesta, r.BuenaMala
       FROM preguntas p
       JOIN respuestas r ON p.IdPregunta = r.IdPregunta
       WHERE p.IdCategoria = 2
-      ORDER BY RAND()
+      ORDER BY p.IdPregunta, RAND()
       LIMIT 40
     `;
 
@@ -225,6 +226,7 @@ app.post("/submitAnswer", (req, res) => {
     res.json({ success: false, message: "Sala no encontrada o juego no iniciado" });
   }
 });
+
 
 app.post("/signup", async (req, res) => {
   const { nombre, apellido, username, password } = req.body;
